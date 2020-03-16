@@ -89,20 +89,29 @@ module ws2812b_meter_ctrl(
                     if (currentEncCount == 16'd0) begin
                         // 対象データ(currentDataBit)を見てデータを保持する区間を決定
                         case (encState)
+                            ENC_STATE_RESET: begin
+                                // Reset->Highに遷移する際にreloadフラグを立ててdata0を読むサイクルを与える
+                                DOUT <= #DELAY 1'd0;
+                                encState <= #DELAY ENC_STATE_LOW; 
+                                currentEncCount <= #DELAY 16'd0;
+                                maxEncCount <= #DELAY (currentDataBit) ? COUNT_T1H_NS_NS : COUNT_T1H_NS;
+                                reloadFlag <= #DELAY 1'd1;
+                            end
                             ENC_STATE_HIGH: begin
                                 DOUT <= #DELAY 1'd0;
                                 encState <= #DELAY ENC_STATE_LOW; 
+                                currentEncCount <= #DELAY currentEncCount + 16'd1;
                                 maxEncCount <= #DELAY (currentDataBit) ? COUNT_T1H_NS_NS : COUNT_T1H_NS;
+                                reloadFlag <= #DELAY 1'd0;
                             end
-                            default: begin // ENC_STATE_RESET, ENC_STATE_LOW含む
+                            default: begin // ENC_STATE_LOW含む
                                 DOUT <= #DELAY 1'd1;
                                 encState <= #DELAY ENC_STATE_HIGH; 
+                                currentEncCount <= #DELAY currentEncCount + 16'd1;
                                 maxEncCount <= #DELAY (currentDataBit) ? COUNT_T1L_NS : COUNT_T0L_NS;
+                                reloadFlag <= #DELAY 1'd0;
                             end
                         endcase
-                        // その他
-                        currentEncCount <= #DELAY currentEncCount + 16'd1;
-                        reloadFlag <= #DELAY 1'd0;
                     end else if (currentEncCount < (maxEncCount - 16'd0)) begin
                         // DOUTを保持
                         currentEncCount <= #DELAY currentEncCount + 16'd1;
@@ -131,33 +140,17 @@ module ws2812b_meter_ctrl(
     // TODO: ちゃんとして
     always @ (posedge clk or negedge reset_n) begin
         if (reset_n != 1'b1) begin
-            DOUT <= #DELAY 1'd0;
             state <= #DELAY STATE_IDLE;
-            currentEncCount <= #DELAY 16'd0;
             currentLedCount <= #DELAY 16'd0;
             currentBitCount <= #DELAY 5'd0;
             currentColor    <= #DELAY 24'd0;
         end else begin
             case (state)
-                STATE_IDLE: begin
-                    DOUT <= #DELAY 1'd0;
-
-                    // disableのときはIDLEを継続
-                    if (enable == 1'd1) begin
-                        currentEncCount <= #DELAY 16'd0;
-                        state <= #DELAY STATE_SEND_RESET;
-                    end
-                end
                 STATE_SEND_RESET: begin
-                    if (currentEncCount < COUNT_RESET) begin
-                        DOUT <= #DELAY 1'd0;
-                        currentEncCount <= #DELAY currentEncCount + 16'd1;
-                    else begin
-                        currentEncCount <= #DELAY 16'd0;
-
+                    // RESET区間が終わる時点でアサートされるので状態遷移する
+                    if (reloadFlag == 1'd1) begin
                         // disableのときはIDLEに戻る
                         if (enable == 1'd1) begin
-                            // TODO: 予め0番目のDOUT
                             currentLedCount <= #DELAY 16'd0;
                             currentBitCount <= #DELAY 5'd0;
                             currentColor    <= #DELAY 24'd0;
@@ -168,29 +161,59 @@ module ws2812b_meter_ctrl(
                     end
                 end
                 STATE_SEND_DATA: begin
-                    // TODO: encCountでL,Hを出力する状態を入れる
-
-                    // 色情報の読み込み
-                    if (currentLedCount < maxCount) begin
-                        if (currentBitCount < 5'd23) begin
+                    if (reloadFlag == 1'd1) begin
+                        if (currentBitCount == 5'd0) begin
+                            // 24bitごとに色情報を更新
+                            if (currentLedCount < onCount) begin
+                                // 色を決定して表示
+                                if (currentLedCount < visibleCounts[0]) begin
+                                    currentDataBit <= #DELAY colors[0][23];
+                                    currentColor <= #DELAY { colors[0][22:0], 1'd0 };
+                                end else if (currentLedCount < visibleCounts[1]) begin
+                                    currentDataBit <= #DELAY colors[1][23];
+                                    currentColor <= #DELAY { colors[1][22:0], 1'd0 };
+                                end else if (currentLedCount < visibleCounts[2]) begin
+                                    currentDataBit <= #DELAY colors[2][23];
+                                    currentColor <= #DELAY { colors[2][22:0], 1'd0 };
+                                end else begin
+                                    // 定義範囲外は黒固定
+                                    currentDataBit <= #DELAY 1'd0;
+                                    currentColor <= #DELAY 24'd0;
+                                end
+                                // カウントもすすめる
+                                currentBitCount <= #DELAY currentBitCount + 5'd1;
+                            else if (currentLedCount < maxCount) begin
+                                // 黒固定
+                                currentDataBit <= #DELAY 1'd0;
+                                currentColor <= #DELAY 24'd0;
+                                currentBitCount <= #DELAY currentBitCount + 5'd1;
+                            end else begin
+                                // maxCountまで贈りきったらRESETに戻る
+                                currentDataBit <= #DELAY 1'd0;
+                                currentColor <= #DELAY 24'd0;
+                                state <= #DELAY STATE_SEND_RESET;
+                                currentBitCount <= #DELAY 5'd0;
+                            end
+                        end else if(currentBitCount < 5'd22) begin
                             // 現在の色を上位ビットから押し出して出力
-                            DOUT <= #DELAY currentColor[23];
+                            currentDataBit <= #DELAY currentColor[23];
                             currentColor <= #DELAY { currentColor[22:0], 1'd0 };
+                            currentBitCount <= #DELAY currentBitCount + 5'd1;
                         end else begin
-                            // TODO: 次の色をロード
+                            // 最初に戻って次の色をロード
+                            currentDataBit <= #DELAY currentColor[23];
+                            currentColor <= #DELAY { currentColor[22:0], 1'd0 };
+                            currentBitCount <= #DELAY 5'd0;
                         end
-                    end else begin
-                        // 次また先頭から送れるようにresetを送る
-                        state <= #DELAY STATE_SEND_RESET;
                     end
                 end
-                default: begin
-
+                default: begin // STATE_IDLEを含む
+                    // disableのときはIDLEを継続
+                    DOUT <= #DELAY 1'd0;
+                    state <= #DELAY (enable == 1'd1) ? STATE_SEND_RESET : STATE_IDLE;
                 end
             endcase
-            end
         end
     end
-
 
 endmodule
