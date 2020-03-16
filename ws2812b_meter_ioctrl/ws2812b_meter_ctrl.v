@@ -32,16 +32,103 @@ module ws2812b_meter_ctrl(
     // Send Data  -> Send Reset : Data送信完了時
     // Send Reset -> Idle       : enable == false
     // Send Data  -> Idle       : enable == false
-    localparam SATATE_IDLE      = 4'd0; // 何もしない
-    localparam STATE_SEND_RESET = 4'd1; // WS2812にRESET Signal送信中
-    localparam STATE_SEND_DATA  = 4'd2; // データ送信中
+    localparam RUN_STATE_IDLE       = 4'd0; // 何もしない
+    localparam RUN_STATE_SEND_RESET = 4'd1; // WS2812にRESET Signal送信中
+    localparam RUN_STATE_SEND_DATA  = 4'd2; // データ送信中
 
-    reg [3:0]  state;            // 現在の動作モード
-    reg [15:0] currentEncCount;  // 現在PWMエンコードしている周期カウント, COUNT_RESETが収まる必要がある(100MHzだと10000なので16bitあれば足りる)
+    reg [3:0]  runState;         // 現在の動作モード
     reg [15:0] currentLedCount;  // 現在処理しているLEDの位置
     reg [4:0]  currentBitCount;  // 現在処理している色データのbit位置
     reg [23:0] currentColor;     // 現在表示しようとしている色データ
 
+
+    localparam ENC_STATE_RESET = 2'd0; // 0固定出力
+    localparam ENC_STATE_HIGH  = 2'd1; // 1出力
+    localparam ENC_STATE_LOW   = 2'd2; // 0出力
+    reg [1:0] encState;          // 現在のエンコードステータス
+    reg [15:0] currentEncCount;  // 現在PWMエンコードしている周期カウント, COUNT_RESETが収まる必要がある(100MHzだと10000なので16bitあれば足りる)
+    reg [15:0] maxEncCount;      // DOUTを変更するまでのカウント数
+    reg reloadFlag;              // currentEncCountが最大値のときにアサートされます。このタイミングで次のbitdataをcurrentDataBitにアサインする
+    reg currentDataBit;          // 現在エンコード中のデータ
+
+
+    always @ (posedge clk or negedge reset_n) begin
+        if (reset_n != 1'b1) begin
+            DOUT <= #DELAY 1'd0;
+            encState <= #DELAY ENC_STATE_RESET; 
+            currentEncCount <= #DELAY 16'd0;
+            maxEncCount <= #DELAY 16'd0;
+            reloadFlag <= #DELAY 1'd0;
+        end else begin
+            case (state)
+                STATE_SEND_RESET: begin
+                    if (currentEncCount < (COUNT_RESET - 16'd1))
+                        // RESET区間0を保つ
+                        DOUT <= #DELAY 1'd0;
+                        encState <= #DELAY ENC_STATE_RESET; 
+                        currentEncCount <= #DELAY currentEncCount + 16'd1;
+                        maxEncCount <= #DELAY 16'd0;
+                        reloadFlag <= #DELAY 1'd0;
+                    else if (currentEncCount == (COUNT_RESET - 16'd1)) begin
+                        // reloadFlagを建てる
+                        DOUT <= #DELAY 1'd0;
+                        encState <= #DELAY ENC_STATE_RESET; 
+                        currentEncCount <= #DELAY currentEncCount + 16'd1;
+                        maxEncCount <= #DELAY 16'd0;
+                        reloadFlag <= #DELAY 1'd1;
+                    end else begin
+                        // 初期状態に戻る
+                        DOUT <= #DELAY 1'd0;
+                        encState <= #DELAY ENC_STATE_RESET; 
+                        currentEncCount <= #DELAY 16'd0;
+                        maxEncCount <= #DELAY 16'd0;
+                        reloadFlag <= #DELAY 1'd0;
+                    end
+                end
+                STATE_SEND_DATA: begin
+                    if (currentEncCount == 16'd0) begin
+                        // 対象データ(currentDataBit)を見てデータを保持する区間を決定
+                        case (encState)
+                            ENC_STATE_HIGH: begin
+                                DOUT <= #DELAY 1'd0;
+                                encState <= #DELAY ENC_STATE_LOW; 
+                                maxEncCount <= #DELAY (currentDataBit) ? COUNT_T1H_NS_NS : COUNT_T1H_NS;
+                            end
+                            default: begin // ENC_STATE_RESET, ENC_STATE_LOW含む
+                                DOUT <= #DELAY 1'd1;
+                                encState <= #DELAY ENC_STATE_HIGH; 
+                                maxEncCount <= #DELAY (currentDataBit) ? COUNT_T1L_NS : COUNT_T0L_NS;
+                            end
+                        endcase
+                        // その他
+                        currentEncCount <= #DELAY currentEncCount + 16'd1;
+                        reloadFlag <= #DELAY 1'd0;
+                    end else if (currentEncCount < (maxEncCount - 16'd0)) begin
+                        // DOUTを保持
+                        currentEncCount <= #DELAY currentEncCount + 16'd1;
+                        reloadFlag <= #DELAY 1'd0;
+                    end else if (currentEncCount == (maxEncCount - 16'd0)) begin
+                        //reloadFlagを建てる
+                        currentEncCount <= #DELAY currentEncCount + 16'd1;
+                        reloadFlag <= #DELAY 1'd1;
+                    end else begin
+                        // 最初に戻る
+                        currentEncCount <= #DELAY currentEncCount + 16'd0;
+                        reloadFlag <= #DELAY 1'd0;
+                    end
+                end
+                default: begin // RUN_STATE_IDLE含む
+                    DOUT <= #DELAY 1'd0;
+                    encState <= #DELAY ENC_STATE_RESET; 
+                    currentEncCount <= #DELAY 16'd0;
+                    reloadFlag <= #DELAY 1'd0;
+                end
+            endcase
+            end
+        end
+    end
+
+    // TODO: ちゃんとして
     always @ (posedge clk or negedge reset_n) begin
         if (reset_n != 1'b1) begin
             DOUT <= #DELAY 1'd0;
@@ -104,5 +191,6 @@ module ws2812b_meter_ctrl(
             end
         end
     end
+
 
 endmodule
