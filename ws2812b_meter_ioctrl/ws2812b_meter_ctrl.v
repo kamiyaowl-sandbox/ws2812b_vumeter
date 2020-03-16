@@ -27,6 +27,22 @@ module ws2812b_meter_ctrl(
     localparam COUNT_RESET   = (100000/CLK_PERIOD_NS); // above 50us
 
     // 状態遷移
+    // Reset -> High  : Send Data遷移時
+    // High  -> Low   : Send Data継続時
+    // Low   -> High  : Send Data継続時
+    // High  -> Reset : Idle遷移時
+    // Low   -> Reset : Idle遷移時
+    localparam ENC_STATE_RESET = 2'd0; // 0固定出力
+    localparam ENC_STATE_HIGH  = 2'd1; // 1出力
+    localparam ENC_STATE_LOW   = 2'd2; // 0出力
+
+    reg [1:0] encState;          // 現在のエンコードステータス
+    reg [15:0] currentEncCount;  // 現在PWMエンコードしている周期カウント, COUNT_RESETが収まる必要がある(100MHzだと10000なので16bitあれば足りる)
+    reg [15:0] maxEncCount;      // DOUTを変更するまでのカウント数
+    reg reloadFlag;              // currentEncCountが最大値のときにアサートされます。このタイミングで次のbitdataをcurrentDataBitにアサインする
+    reg currentDataBit;          // 現在エンコード中のデータ
+
+    // 状態遷移
     // Idle       -> Send Reset : enable == true
     // Send Reset -> Send Data  : Reset送信完了時
     // Send Data  -> Send Reset : Data送信完了時
@@ -40,17 +56,6 @@ module ws2812b_meter_ctrl(
     reg [15:0] currentLedCount;  // 現在処理しているLEDの位置
     reg [4:0]  currentBitCount;  // 現在処理している色データのbit位置
     reg [23:0] currentColor;     // 現在表示しようとしている色データ
-
-
-    localparam ENC_STATE_RESET = 2'd0; // 0固定出力
-    localparam ENC_STATE_HIGH  = 2'd1; // 1出力
-    localparam ENC_STATE_LOW   = 2'd2; // 0出力
-    reg [1:0] encState;          // 現在のエンコードステータス
-    reg [15:0] currentEncCount;  // 現在PWMエンコードしている周期カウント, COUNT_RESETが収まる必要がある(100MHzだと10000なので16bitあれば足りる)
-    reg [15:0] maxEncCount;      // DOUTを変更するまでのカウント数
-    reg reloadFlag;              // currentEncCountが最大値のときにアサートされます。このタイミングで次のbitdataをcurrentDataBitにアサインする
-    reg currentDataBit;          // 現在エンコード中のデータ
-
 
     always @ (posedge clk or negedge reset_n) begin
         if (reset_n != 1'b1) begin
@@ -94,14 +99,14 @@ module ws2812b_meter_ctrl(
                                 DOUT <= #DELAY 1'd0;
                                 encState <= #DELAY ENC_STATE_LOW; 
                                 currentEncCount <= #DELAY 16'd0;
-                                maxEncCount <= #DELAY (currentDataBit) ? COUNT_T1H_NS_NS : COUNT_T1H_NS;
+                                maxEncCount <= #DELAY (currentDataBit) ? COUNT_T1H_NS : COUNT_T0H_NS;
                                 reloadFlag <= #DELAY 1'd1;
                             end
                             ENC_STATE_HIGH: begin
                                 DOUT <= #DELAY 1'd0;
                                 encState <= #DELAY ENC_STATE_LOW; 
                                 currentEncCount <= #DELAY currentEncCount + 16'd1;
-                                maxEncCount <= #DELAY (currentDataBit) ? COUNT_T1H_NS_NS : COUNT_T1H_NS;
+                                maxEncCount <= #DELAY (currentDataBit) ? COUNT_T1H_NS : COUNT_T0H_NS;
                                 reloadFlag <= #DELAY 1'd0;
                             end
                             default: begin // ENC_STATE_LOW含む
@@ -137,7 +142,6 @@ module ws2812b_meter_ctrl(
         end
     end
 
-    // TODO: ちゃんとして
     always @ (posedge clk or negedge reset_n) begin
         if (reset_n != 1'b1) begin
             state <= #DELAY STATE_IDLE;
