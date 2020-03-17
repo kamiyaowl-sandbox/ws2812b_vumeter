@@ -1,7 +1,7 @@
 // data0: high: 0.4us, low: 0.85us
 // data1: high: 0.8us, low: 0.45us
 // RESET: 50us 
-module ws2812b_meter_ctrl(
+module ws2812b_meter_ioctrl (
         parameter DELAY = 1, // for simulation
         parameter CLK_PERIOD_NS = 10, // 100MHz
         parameter COLOR_N = 3, // 3色まで取り扱い可
@@ -57,7 +57,8 @@ module ws2812b_meter_ctrl(
     reg [4:0]  currentBitCount;  // 現在処理している色データのbit位置
     reg [23:0] currentColor;     // 現在表示しようとしている色データ
 
-    always @ (posedge clk or negedge reset_n) begin
+    // pwmのエンコード処理
+    always @ (posedge clk) begin
         if (reset_n != 1'b1) begin
             DOUT <= #DELAY 1'd0;
             encState <= #DELAY ENC_STATE_RESET; 
@@ -142,7 +143,8 @@ module ws2812b_meter_ctrl(
         end
     end
 
-    always @ (posedge clk or negedge reset_n) begin
+    // 24bitごとの色決定
+    always @ (posedge clk) begin
         if (reset_n != 1'b1) begin
             state <= #DELAY STATE_IDLE;
             currentLedCount <= #DELAY 16'd0;
